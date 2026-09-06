@@ -1,0 +1,84 @@
+name: FFNET iOS Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Install ldid
+        run: brew install ldid
+
+      - name: Verify iOS SDK present
+        run: xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build FFNET.dylib
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CLANGPP=$(xcrun --sdk iphoneos --find clang++)
+          CLANGC=$(xcrun --sdk iphoneos --find clang)
+
+          COMMON="-arch arm64 -isysroot $SDK -mios-version-min=15.0"
+          CXXFLAGS="$COMMON -std=c++17 -fobjc-arc -fvisibility=hidden -O2"
+          CFLAGS="$COMMON -fvisibility=hidden -O2"
+
+          # Compile fishhook as plain C (NOT C++)
+          $CLANGC $CFLAGS -c fishhook/fishhook.c -o fishhook/fishhook.o \
+            -I fishhook/
+
+          # Compile all ObjC++/C++ sources
+          SRCS=(
+            src/main.mm
+            src/bypass/Bypass.mm
+            src/bypass/AntiDebug.mm
+            src/features/Aimbot.mm
+            src/features/ESP.mm
+            src/ui/Menu.mm
+          )
+
+          OBJS=()
+          for f in "${SRCS[@]}"; do
+            out="${f%.mm}.o"
+            $CLANGPP $CXXFLAGS \
+              -I src/ \
+              -I fishhook/ \
+              -c "$f" -o "$out"
+            OBJS+=("$out")
+          done
+
+          # Link everything into .dylib
+          $CLANGPP $COMMON \
+            -dynamiclib \
+            -framework Foundation \
+            -framework UIKit \
+            -framework QuartzCore \
+            -framework CoreGraphics \
+            -lobjc -lc++ \
+            "${OBJS[@]}" \
+            fishhook/fishhook.o \
+            -o FFNET.dylib
+
+      - name: Fakesign with ldid
+        run: ldid -S FFNET.dylib
+
+      - name: Verify dylib
+        run: |
+          file FFNET.dylib
+          otool -L FFNET.dylib
+
+      - name: Upload FFNET.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FFNET-iOS-dylib
+          path: FFNET.dylib
+          retention-days: 30
